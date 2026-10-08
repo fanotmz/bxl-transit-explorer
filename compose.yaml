@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: bxl-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bxl}
+      POSTGRES_USER: ${POSTGRES_USER:-bxl}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bxl_dev}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - bxl-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bxl} -d ${POSTGRES_DB:-bxl}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  bxl-pgdata:
