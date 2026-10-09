@@ -9,7 +9,13 @@ import java.util.ArrayList;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashSet;
+import java.util.ArrayDeque;
+import java.util.Comparator;
+import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.commons.csv.CSVFormat;
@@ -113,6 +119,116 @@ public class GtfsImportService {
         }
         jdbc.batchUpdate("INSERT INTO service_jour (service_id, date) VALUES (?, ?)", lignes);
         return lignes.size();
+    }
+
+    private static final double TOLERANCE_M = 5.0;
+    private static final double RAYON_TERRE_M = 6371008.8;
+
+    @Transactional
+    public int importTraces(Path dossier) throws IOException {
+        Map<String, List<double[]>> parTrace = new LinkedHashMap<>();
+        for (CSVRecord r : lire(dossier.resolve("shapes.txt"))) {
+            parTrace.computeIfAbsent(r.get("shape_id"), k -> new ArrayList<>())
+                    .add(new double[] {
+                        Double.parseDouble(r.get("shape_pt_lat")),
+                        Double.parseDouble(r.get("shape_pt_lon")),
+                        Double.parseDouble(r.get("shape_pt_sequence"))
+                    });
+        }
+        double kx = 111320 * Math.cos(Math.toRadians(50.85));
+        double ky = 110574;
+        List<Object[]> lignes = new ArrayList<>();
+        for (Map.Entry<String, List<double[]>> e : parTrace.entrySet()) {
+            List<double[]> pts = e.getValue();
+            pts.sort(Comparator.comparingDouble(p -> p[2]));
+            int n = pts.size();
+            double[] x = new double[n];
+            double[] y = new double[n];
+            double[] cum = new double[n];
+            for (int i = 0; i < n; i++) {
+                double[] p = pts.get(i);
+                x[i] = p[1] * kx;
+                y[i] = p[0] * ky;
+                if (i > 0) {
+                    double[] q = pts.get(i - 1);
+                    cum[i] = cum[i - 1] + haversine(q[0], q[1], p[0], p[1]);
+                }
+            }
+            boolean[] garde = simplifier(x, y, TOLERANCE_M);
+            StringBuilder json = new StringBuilder("[");
+            boolean premier = true;
+            for (int i = 0; i < n; i++) {
+                if (!garde[i]) {
+                    continue;
+                }
+                if (!premier) {
+                    json.append(',');
+                }
+                premier = false;
+                json.append(String.format(Locale.ROOT, "[%.6f,%.6f,%d]",
+                        pts.get(i)[0], pts.get(i)[1], Math.round(cum[i])));
+            }
+            json.append(']');
+            lignes.add(new Object[] { e.getKey(), json.toString(), (int) Math.round(cum[n - 1]) });
+        }
+        jdbc.batchUpdate("""
+            INSERT INTO trace (shape_id, points, longueur_m)
+            VALUES (?, ?::jsonb, ?)
+            ON CONFLICT (shape_id) DO UPDATE SET
+                points = EXCLUDED.points, longueur_m = EXCLUDED.longueur_m
+            """, lignes);
+        return lignes.size();
+    }
+
+    private static double haversine(double lat1, double lon1, double lat2, double lon2) {
+        double p1 = Math.toRadians(lat1);
+        double p2 = Math.toRadians(lat2);
+        double dp = p2 - p1;
+        double dl = Math.toRadians(lon2 - lon1);
+        double h = Math.sin(dp / 2) * Math.sin(dp / 2)
+                + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+        return 2 * RAYON_TERRE_M * Math.asin(Math.sqrt(h));
+    }
+
+    private static boolean[] simplifier(double[] x, double[] y, double tolerance) {
+        int n = x.length;
+        boolean[] garde = new boolean[n];
+        garde[0] = true;
+        garde[n - 1] = true;
+        Deque<int[]> pile = new ArrayDeque<>();
+        pile.push(new int[] { 0, n - 1 });
+        while (!pile.isEmpty()) {
+            int[] seg = pile.pop();
+            int a = seg[0];
+            int b = seg[1];
+            if (b <= a + 1) {
+                continue;
+            }
+            double dx = x[b] - x[a];
+            double dy = y[b] - y[a];
+            double l2 = dx * dx + dy * dy;
+            double max = -1;
+            int idx = -1;
+            for (int i = a + 1; i < b; i++) {
+                double d;
+                if (l2 == 0) {
+                    d = Math.hypot(x[i] - x[a], y[i] - y[a]);
+                } else {
+                    double t = Math.max(0, Math.min(1, ((x[i] - x[a]) * dx + (y[i] - y[a]) * dy) / l2));
+                    d = Math.hypot(x[i] - (x[a] + t * dx), y[i] - (y[a] + t * dy));
+                }
+                if (d > max) {
+                    max = d;
+                    idx = i;
+                }
+            }
+            if (max > tolerance) {
+                garde[idx] = true;
+                pile.push(new int[] { a, idx });
+                pile.push(new int[] { idx, b });
+            }
+        }
+        return garde;
     }
 
     private static List<CSVRecord> lire(Path fichier) throws IOException {
