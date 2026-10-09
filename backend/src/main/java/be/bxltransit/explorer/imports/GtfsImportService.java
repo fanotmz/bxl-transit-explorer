@@ -6,7 +6,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
@@ -71,6 +75,44 @@ public class GtfsImportService {
                 longitude = EXCLUDED.longitude, accessible_pmr = EXCLUDED.accessible_pmr
             """, arrets);
         return arrets.size();
+    }
+
+    private static final String[] NOMS_JOURS = {
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+    };
+
+    private record ServiceJour(String serviceId, LocalDate date) {
+    }
+
+    @Transactional
+    public int importServiceJours(Path dossier) throws IOException {
+        DateTimeFormatter format = DateTimeFormatter.BASIC_ISO_DATE;
+        Set<ServiceJour> jours = new LinkedHashSet<>();
+        for (CSVRecord r : lire(dossier.resolve("calendar.txt"))) {
+            LocalDate debut = LocalDate.parse(r.get("start_date"), format);
+            LocalDate fin = LocalDate.parse(r.get("end_date"), format);
+            for (LocalDate jour = debut; !jour.isAfter(fin); jour = jour.plusDays(1)) {
+                String colonne = NOMS_JOURS[jour.getDayOfWeek().getValue() - 1];
+                if (r.get(colonne).equals("1")) {
+                    jours.add(new ServiceJour(r.get("service_id"), jour));
+                }
+            }
+        }
+        for (CSVRecord r : lire(dossier.resolve("calendar_dates.txt"))) {
+            ServiceJour cle = new ServiceJour(r.get("service_id"), LocalDate.parse(r.get("date"), format));
+            if (r.get("exception_type").equals("2")) {
+                jours.remove(cle);
+            } else {
+                jours.add(cle);
+            }
+        }
+        jdbc.update("DELETE FROM service_jour");
+        List<Object[]> lignes = new ArrayList<>();
+        for (ServiceJour j : jours) {
+            lignes.add(new Object[] { j.serviceId(), java.sql.Date.valueOf(j.date()) });
+        }
+        jdbc.batchUpdate("INSERT INTO service_jour (service_id, date) VALUES (?, ?)", lignes);
+        return lignes.size();
     }
 
     private static List<CSVRecord> lire(Path fichier) throws IOException {
