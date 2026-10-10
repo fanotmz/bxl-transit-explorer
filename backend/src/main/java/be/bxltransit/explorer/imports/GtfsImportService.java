@@ -13,6 +13,7 @@ import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -229,6 +230,117 @@ public class GtfsImportService {
             }
         }
         return garde;
+    }
+
+    private record Trajet(String routeId, String serviceId, int sens, String destination,
+                          String shapeId, Boolean pmr) {
+    }
+
+    @Transactional
+    public int[] importHoraires(Path dossier) throws IOException {
+        Map<String, Trajet> trajets = new HashMap<>();
+        try (CSVParser parser = ouvrir(dossier.resolve("trips.txt"))) {
+            for (CSVRecord r : parser) {
+                trajets.put(r.get("trip_id"), new Trajet(
+                        r.get("route_id"), r.get("service_id"),
+                        Integer.parseInt(r.get("direction_id")), vide(r.get("trip_headsign")),
+                        r.get("shape_id"), pmr(r.get("wheelchair_accessible"))));
+            }
+        }
+
+        jdbc.update("DELETE FROM course");
+        jdbc.update("DELETE FROM patron_arret");
+        jdbc.update("DELETE FROM patron");
+
+        Map<String, Long> patrons = new HashMap<>();
+        List<Object[]> lignesPatron = new ArrayList<>();
+        List<Object[]> lignesArret = new ArrayList<>();
+        List<Object[]> lignesCourse = new ArrayList<>();
+
+        String courant = null;
+        List<String> arrets = new ArrayList<>();
+        List<Integer> heures = new ArrayList<>();
+        try (CSVParser parser = ouvrir(dossier.resolve("stop_times.txt"))) {
+            for (CSVRecord r : parser) {
+                String id = r.get("trip_id");
+                if (courant != null && !id.equals(courant)) {
+                    enregistrer(courant, trajets.get(courant), arrets, heures,
+                            patrons, lignesPatron, lignesArret, lignesCourse);
+                    arrets.clear();
+                    heures.clear();
+                }
+                courant = id;
+                arrets.add(r.get("stop_id"));
+                heures.add(secondes(r.get("arrival_time")));
+            }
+            if (courant != null) {
+                enregistrer(courant, trajets.get(courant), arrets, heures,
+                        patrons, lignesPatron, lignesArret, lignesCourse);
+            }
+        }
+
+        inserer("INSERT INTO patron (patron_id, route_id, sens, destination, shape_id, duree_s) "
+                + "VALUES (?, ?, ?, ?, ?, ?)", lignesPatron);
+        inserer("INSERT INTO patron_arret (patron_id, ordre, stop_id, decalage_s) "
+                + "VALUES (?, ?, ?, ?)", lignesArret);
+        inserer("INSERT INTO course (course_id, patron_id, service_id, heure_depart_s, accessible_pmr) "
+                + "VALUES (?, ?, ?, ?, ?)", lignesCourse);
+        jdbc.queryForObject("SELECT setval(pg_get_serial_sequence('patron', 'patron_id'), ?)",
+                Long.class, (long) lignesPatron.size());
+        return new int[] { lignesPatron.size(), lignesArret.size(), lignesCourse.size() };
+    }
+
+    private static void enregistrer(String tripId, Trajet t, List<String> arrets, List<Integer> heures,
+                                    Map<String, Long> patrons, List<Object[]> lignesPatron,
+                                    List<Object[]> lignesArret, List<Object[]> lignesCourse) {
+        if (t == null) {
+            throw new IllegalStateException("Course inconnue dans trips.txt : " + tripId);
+        }
+        int depart = heures.get(0);
+        StringBuilder cle = new StringBuilder();
+        cle.append(t.routeId()).append('|').append(t.sens()).append('|').append(t.shapeId());
+        for (int i = 0; i < arrets.size(); i++) {
+            cle.append('|').append(arrets.get(i)).append(',').append(heures.get(i) - depart);
+        }
+        String k = cle.toString();
+        Long patronId = patrons.get(k);
+        if (patronId == null) {
+            patronId = (long) patrons.size() + 1;
+            patrons.put(k, patronId);
+            int duree = heures.get(heures.size() - 1) - depart;
+            lignesPatron.add(new Object[] {
+                patronId, t.routeId(), t.sens(), t.destination(), t.shapeId(), duree });
+            for (int i = 0; i < arrets.size(); i++) {
+                lignesArret.add(new Object[] {
+                    patronId, i + 1, arrets.get(i), heures.get(i) - depart });
+            }
+        }
+        lignesCourse.add(new Object[] { tripId, patronId, t.serviceId(), depart, t.pmr() });
+    }
+
+    private void inserer(String sql, List<Object[]> lignes) {
+        final int taille = 5000;
+        for (int debut = 0; debut < lignes.size(); debut += taille) {
+            jdbc.batchUpdate(sql, lignes.subList(debut, Math.min(debut + taille, lignes.size())));
+        }
+    }
+
+    private static int secondes(String heure) {
+        String[] p = heure.split(":");
+        return Integer.parseInt(p[0]) * 3600 + Integer.parseInt(p[1]) * 60 + Integer.parseInt(p[2]);
+    }
+
+    private static CSVParser ouvrir(Path fichier) throws IOException {
+        Reader reader = Files.newBufferedReader(fichier, StandardCharsets.UTF_8);
+        reader.mark(1);
+        if (reader.read() != 0xFEFF) {
+            reader.reset();
+        }
+        CSVFormat format = CSVFormat.DEFAULT.builder()
+                .setHeader()
+                .setSkipHeaderRecord(true)
+                .build();
+        return format.parse(reader);
     }
 
     private static List<CSVRecord> lire(Path fichier) throws IOException {

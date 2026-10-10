@@ -35,6 +35,8 @@ public class GtfsImportRunner implements ApplicationRunner {
         int arrets = service.importArrets(dossier);
         int jours = service.importServiceJours(dossier);
         int traces = service.importTraces(dossier);
+        int[] horaires = service.importHoraires(dossier);
         log.info("Import GTFS termine : {} lignes, {} arrets, {} jours de service, {} traces", lignes, arrets, jours, traces);
+        log.info("Horaires : {} patrons, {} arrets de patron, {} courses", horaires[0], horaires[1], horaires[2]);
     }
 }
