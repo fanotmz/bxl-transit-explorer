@@ -18,11 +18,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowCallbackHandler;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -374,6 +377,104 @@ public class GtfsImportService {
             JOIN nb_dates nd ON nd.type_jour = j.type_jour
             GROUP BY pd.route_id, pd.sens, j.type_jour, pd.heure, nd.n
             """);
+    }
+
+    private record PointArret(long patronId, String shapeId, int ordre, double lat, double lon) {
+    }
+
+    private static final Pattern NOMBRE = Pattern.compile("-?\\d+(?:\\.\\d+)?");
+
+    @Transactional
+    public double[] calculerDistancesArrets() {
+        Map<String, double[][]> traces = new HashMap<>();
+        jdbc.query("SELECT shape_id, points::text FROM trace", (RowCallbackHandler) rs -> {
+            traces.put(rs.getString(1), lireTrace(rs.getString(2)));
+        });
+
+        List<PointArret> arrets = jdbc.query("""
+            SELECT p.patron_id, p.shape_id, pa.ordre, a.latitude, a.longitude
+            FROM patron p
+            JOIN patron_arret pa ON pa.patron_id = p.patron_id
+            JOIN arret a ON a.stop_id = pa.stop_id
+            ORDER BY p.patron_id, pa.ordre
+            """, (rs, i) -> new PointArret(rs.getLong(1), rs.getString(2), rs.getInt(3),
+                rs.getDouble(4), rs.getDouble(5)));
+
+        double kx = 111320 * Math.cos(Math.toRadians(50.85));
+        double ky = 110574;
+        List<Object[]> maj = new ArrayList<>();
+        double somme = 0;
+        double max = 0;
+        int loin = 0;
+        int debut = 0;
+        while (debut < arrets.size()) {
+            long patronId = arrets.get(debut).patronId();
+            int fin = debut;
+            while (fin < arrets.size() && arrets.get(fin).patronId() == patronId) {
+                fin++;
+            }
+            double[][] trace = traces.get(arrets.get(debut).shapeId());
+            if (trace == null || trace.length < 2) {
+                throw new IllegalStateException("Trace inutilisable pour le patron " + patronId);
+            }
+            int segment = 0;
+            double precedent = 0;
+            for (int k = debut; k < fin; k++) {
+                PointArret a = arrets.get(k);
+                double px = a.lon() * kx;
+                double py = a.lat() * ky;
+                double meilleure = Double.MAX_VALUE;
+                int meilleurSegment = segment;
+                double meilleurT = 0;
+                for (int s = segment; s < trace.length - 1; s++) {
+                    double ax = trace[s][1] * kx;
+                    double ay = trace[s][0] * ky;
+                    double bx = trace[s + 1][1] * kx;
+                    double by = trace[s + 1][0] * ky;
+                    double dx = bx - ax;
+                    double dy = by - ay;
+                    double l2 = dx * dx + dy * dy;
+                    double t = l2 == 0 ? 0
+                            : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+                    double d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+                    if (d < meilleure) {
+                        meilleure = d;
+                        meilleurSegment = s;
+                        meilleurT = t;
+                    }
+                }
+                double distance = trace[meilleurSegment][2]
+                        + meilleurT * (trace[meilleurSegment + 1][2] - trace[meilleurSegment][2]);
+                distance = Math.max(distance, precedent);
+                precedent = distance;
+                segment = meilleurSegment;
+                maj.add(new Object[] { (int) Math.round(distance), patronId, a.ordre() });
+                somme += meilleure;
+                max = Math.max(max, meilleure);
+                if (meilleure > 50) {
+                    loin++;
+                }
+            }
+            debut = fin;
+        }
+        inserer("UPDATE patron_arret SET distance_trace_m = ? WHERE patron_id = ? AND ordre = ?", maj);
+        return new double[] { maj.size(), somme / maj.size(), max, loin };
+    }
+
+    private static double[][] lireTrace(String json) {
+        List<Double> valeurs = new ArrayList<>();
+        Matcher m = NOMBRE.matcher(json);
+        while (m.find()) {
+            valeurs.add(Double.parseDouble(m.group()));
+        }
+        int n = valeurs.size() / 3;
+        double[][] points = new double[n][3];
+        for (int i = 0; i < n; i++) {
+            points[i][0] = valeurs.get(3 * i);
+            points[i][1] = valeurs.get(3 * i + 1);
+            points[i][2] = valeurs.get(3 * i + 2);
+        }
+        return points;
     }
 
     private static List<CSVRecord> lire(Path fichier) throws IOException {

@@ -40,5 +40,7 @@ public class GtfsImportRunner implements ApplicationRunner {
         log.info("Horaires : {} patrons, {} arrets de patron, {} courses", horaires[0], horaires[1], horaires[2]);
         int agregats = service.calculerAgregats();
         log.info("Agregats : {} lignes de passages par ligne et par heure", agregats);
+        double[] dist = service.calculerDistancesArrets();
+        log.info("Distances : {} arrets de patron, ecart moyen au trace {} m, maximum {} m, {} a plus de 50 m", (int) dist[0], Math.round(dist[1] * 10) / 10.0, Math.round(dist[2]), (int) dist[3]);
     }
 }
