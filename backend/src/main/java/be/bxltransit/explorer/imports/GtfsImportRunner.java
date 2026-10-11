@@ -38,5 +38,7 @@ public class GtfsImportRunner implements ApplicationRunner {
         int[] horaires = service.importHoraires(dossier);
         log.info("Import GTFS termine : {} lignes, {} arrets, {} jours de service, {} traces", lignes, arrets, jours, traces);
         log.info("Horaires : {} patrons, {} arrets de patron, {} courses", horaires[0], horaires[1], horaires[2]);
+        int agregats = service.calculerAgregats();
+        log.info("Agregats : {} lignes de passages par ligne et par heure", agregats);
     }
 }

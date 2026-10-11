@@ -343,6 +343,39 @@ public class GtfsImportService {
         return format.parse(reader);
     }
 
+    @Transactional
+    public int calculerAgregats() {
+        jdbc.update("DELETE FROM passages_ligne_heure");
+        return jdbc.update("""
+            INSERT INTO passages_ligne_heure (route_id, sens, type_jour, heure, nb_passages)
+            WITH jours AS (
+                SELECT date,
+                       CASE EXTRACT(ISODOW FROM date)
+                           WHEN 6 THEN 'samedi'
+                           WHEN 7 THEN 'dimanche'
+                           ELSE 'semaine'
+                       END AS type_jour
+                FROM (SELECT DISTINCT date FROM service_jour) d
+            ),
+            nb_dates AS (
+                SELECT type_jour, count(*) AS n FROM jours GROUP BY type_jour
+            ),
+            par_date AS (
+                SELECT p.route_id, p.sens, sj.date, c.heure_depart_s / 3600 AS heure, count(*) AS nb
+                FROM course c
+                JOIN patron p ON p.patron_id = c.patron_id
+                JOIN service_jour sj ON sj.service_id = c.service_id
+                GROUP BY p.route_id, p.sens, sj.date, c.heure_depart_s / 3600
+            )
+            SELECT pd.route_id, pd.sens, j.type_jour, pd.heure,
+                   round(sum(pd.nb)::numeric / nd.n, 2)
+            FROM par_date pd
+            JOIN jours j ON j.date = pd.date
+            JOIN nb_dates nd ON nd.type_jour = j.type_jour
+            GROUP BY pd.route_id, pd.sens, j.type_jour, pd.heure, nd.n
+            """);
+    }
+
     private static List<CSVRecord> lire(Path fichier) throws IOException {
         try (Reader reader = Files.newBufferedReader(fichier, StandardCharsets.UTF_8)) {
             reader.mark(1);
