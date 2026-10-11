@@ -37,12 +37,33 @@
           {{ l.nom }}
         </h2>
         <p>{{ nbArrets() }} arrêts @if (chargement()) { · chargement... }</p>
+
+        <div class="temps">
+          <button type="button" [class.actif]="enDirect()" (click)="basculerDirect()">En direct</button>
+          <input
+            type="range"
+            min="0"
+            max="1439"
+            step="1"
+            [value]="minutes()"
+            (input)="changerMinutes($any($event.target).valueAsNumber)"
+          />
+          <strong class="heure">{{ heureTexte() }}</strong>
+        </div>
+        @if (positionsOk()) {
+          <p class="note">
+            Positions théoriques calculées d'après les horaires : {{ nbVehicules() }} véhicule(s) en circulation.
+          </p>
+        } @else {
+          <p class="erreur">Positions indisponibles : le backend ne répond pas sur /positions.</p>
+        }
+
+        <h3>Courses par heure (moyenne)</h3>
         <div class="jours">
           @for (t of typesJour; track t) {
             <button type="button" [class.actif]="typeJour() === t" (click)="changerTypeJour(t)">{{ t }}</button>
           }
         </div>
-        <h3>Courses par heure (moyenne)</h3>
         <div class="barres">
           @for (b of barres(); track b.heure) {
             <div class="colonne" [attr.title]="b.info">
@@ -55,7 +76,9 @@
           }
         </div>
         <p class="legende">
-          <span class="pastille sens0"></span>Sens 0<span class="pastille sens1"></span>Sens 1
+          @for (s of sens(); track s.sens) {
+            <span class="pastille" [class.sens0]="s.sens === 0" [class.sens1]="s.sens === 1"></span>Vers {{ s.destination }}
+          }
         </p>
       } @else {
         <p>Choisis une ligne pour afficher son tracé, ses arrêts et ses fréquences.</p>

@@ -93,6 +93,22 @@ public class LigneController {
         }
     }
 
+    public record SensDto(int sens, String destination) {
+    }
+
+    @GetMapping("/lignes/{routeId}/sens")
+    public List<SensDto> sens(@PathVariable String routeId) {
+        verifierLigne(routeId);
+        return jdbc.query("""
+            SELECT DISTINCT ON (p.sens) p.sens, p.destination
+            FROM patron p
+            JOIN course c ON c.patron_id = p.patron_id
+            WHERE p.route_id = ? AND p.destination IS NOT NULL
+            GROUP BY p.sens, p.destination
+            ORDER BY p.sens, count(*) DESC
+            """, (rs, i) -> new SensDto(rs.getInt("sens"), rs.getString("destination")), routeId);
+    }
+
     @GetMapping("/lignes/{routeId}/frequences")
     public List<FrequenceDto> frequences(@PathVariable String routeId,
                                          @RequestParam(defaultValue = "semaine") String typeJour) {
