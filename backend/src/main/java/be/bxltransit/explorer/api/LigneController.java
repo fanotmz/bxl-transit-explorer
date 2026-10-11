@@ -3,6 +3,8 @@ package be.bxltransit.explorer.api;
 import java.util.List;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,6 +42,55 @@ public class LigneController {
             """, (rs, i) -> new LigneDto(
                 rs.getString("route_id"), rs.getString("numero"), rs.getString("nom"),
                 rs.getString("mode"), rs.getString("couleur"), rs.getString("couleur_texte")));
+    }
+
+    public record ArretDto(String id, String nom, double latitude, double longitude,
+                           Boolean accessiblePmr) {
+    }
+
+    @GetMapping("/lignes/{routeId}/traces")
+    public ResponseEntity<String> traces(@PathVariable String routeId) {
+        verifierLigne(routeId);
+        String json = jdbc.queryForObject("""
+            SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'shapeId', t.shape_id, 'sens', s.sens, 'courses', s.nb,
+                       'longueurM', t.longueur_m, 'points', t.points
+                   ) ORDER BY s.sens, s.nb DESC), '[]'::jsonb)::text
+            FROM (
+                SELECT p.shape_id, p.sens, count(c.course_id) AS nb
+                FROM patron p
+                LEFT JOIN course c ON c.patron_id = p.patron_id
+                WHERE p.route_id = ?
+                GROUP BY p.shape_id, p.sens
+            ) s
+            JOIN trace t ON t.shape_id = s.shape_id
+            """, String.class, routeId);
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json);
+    }
+
+    @GetMapping("/lignes/{routeId}/arrets")
+    public List<ArretDto> arrets(@PathVariable String routeId) {
+        verifierLigne(routeId);
+        return jdbc.query("""
+            SELECT DISTINCT a.stop_id, a.nom, a.latitude, a.longitude, a.accessible_pmr
+            FROM patron p
+            JOIN patron_arret pa ON pa.patron_id = p.patron_id
+            JOIN arret a ON a.stop_id = pa.stop_id
+            WHERE p.route_id = ?
+            ORDER BY a.nom, a.stop_id
+            """, (rs, i) -> new ArretDto(
+                rs.getString("stop_id"), rs.getString("nom"),
+                rs.getDouble("latitude"), rs.getDouble("longitude"),
+                rs.getObject("accessible_pmr", Boolean.class)),
+            routeId);
+    }
+
+    private void verifierLigne(String routeId) {
+        Integer n = jdbc.queryForObject("SELECT count(*) FROM ligne WHERE route_id = ?",
+                Integer.class, routeId);
+        if (n == null || n == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Ligne inconnue : " + routeId);
+        }
     }
 
     @GetMapping("/lignes/{routeId}/frequences")

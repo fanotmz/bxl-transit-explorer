@@ -1,0 +1,68 @@
+﻿<div class="page">
+  <aside class="panneau">
+    <h1>BXL Transit Explorer</h1>
+    <input
+      type="search"
+      placeholder="Rechercher une ligne (7, Heysel...)"
+      [value]="recherche()"
+      (input)="recherche.set($any($event.target).value)"
+    />
+    <div class="modes">
+      @for (m of modes; track m) {
+        <button type="button" [class.actif]="mode() === m" (click)="mode.set(m)">{{ m }}</button>
+      }
+    </div>
+    <ul class="lignes">
+      @for (l of lignesFiltrees(); track l.id) {
+        <li>
+          <button type="button" [class.choisie]="choisie()?.id === l.id" (click)="selectionner(l)">
+            <span class="badge" [style.background]="couleur(l)" [style.color]="couleurTexte(l)">{{ l.numero }}</span>
+            <span class="nom">{{ l.nom }}</span>
+          </button>
+        </li>
+      }
+    </ul>
+  </aside>
+
+  <main class="contenu">
+    @if (erreur()) {
+      <p class="erreur">{{ erreur() }}</p>
+    }
+    <div #carte class="carte"></div>
+
+    <section class="infos">
+      @if (choisie(); as l) {
+        <h2>
+          <span class="badge" [style.background]="couleur(l)" [style.color]="couleurTexte(l)">{{ l.numero }}</span>
+          {{ l.nom }}
+        </h2>
+        <p>{{ nbArrets() }} arrêts @if (chargement()) { · chargement... }</p>
+        <div class="jours">
+          @for (t of typesJour; track t) {
+            <button type="button" [class.actif]="typeJour() === t" (click)="changerTypeJour(t)">{{ t }}</button>
+          }
+        </div>
+        <h3>Courses par heure (moyenne)</h3>
+        <div class="barres">
+          @for (b of barres(); track b.heure) {
+            <div class="colonne" [attr.title]="b.info">
+              <div class="paire">
+                <div class="barre sens0" [style.height.%]="b.h0"></div>
+                <div class="barre sens1" [style.height.%]="b.h1"></div>
+              </div>
+              <span>{{ b.heure % 24 }}</span>
+            </div>
+          }
+        </div>
+        <p class="legende">
+          <span class="pastille sens0"></span>Sens 0<span class="pastille sens1"></span>Sens 1
+        </p>
+      } @else {
+        <p>Choisis une ligne pour afficher son tracé, ses arrêts et ses fréquences.</p>
+      }
+      <footer class="source">
+        Source: STIB-MIVB – Open Data – 02/10/2026 (flux GTFS static). Fond de carte © contributeurs OpenStreetMap.
+      </footer>
+    </section>
+  </main>
+</div>
